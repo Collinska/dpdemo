@@ -5,7 +5,8 @@ import {
   MapPin, TrendingUp, AlertTriangle, Truck, ChevronRight, FileText,
   ArrowLeftRight, ClipboardList, ScrollText, Layers, Trash2, ArrowDownToLine,
   Wallet, ShoppingCart, Minus, BookOpen, Scale, TrendingDown, FileBarChart, HandCoins,
-  ShoppingBag, UserCog, Printer, Ban, Pencil, FileCheck, ClipboardCheck, Eye
+  ShoppingBag, UserCog, Printer, Ban, Pencil, FileCheck, ClipboardCheck, Eye,
+  Sparkles, Download, Mail, MessageSquare, BarChart2, Timer, Route
 } from "lucide-react";
 
 /* ============================================================
@@ -196,6 +197,49 @@ const JOURNAL0 = [
   { id: uid("J"), date: dISO(6), type: "Payment", ref: "PMT-0004", narration: "Rider fuel & transport", lines: [{ acct: "6030", dr: 8000, cr: 0 }, { acct: "1010", dr: 0, cr: 8000 }] },
 ];
 
+// ---- Export utilities (CSV → Excel download, PDF via print) ----
+const exportCSV = (filename, cols, rows) => {
+  const hdr = cols.join(",");
+  const body = rows.map(r => r.map(c => `"${String(c ?? "").replace(/"/g, '""')}"`).join(",")).join("\n");
+  const blob = new Blob([hdr + "\n" + body], { type: "text/csv" });
+  const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = filename + ".csv"; a.click();
+};
+const exportPDF = (title) => {
+  // Open a print dialog scoped to the current view — browser "Save as PDF" gives a clean output
+  const style = document.createElement("style");
+  style.textContent = `@media print { nav, aside, header, .no-print { display: none !important; } main { padding: 0 !important; } }`;
+  document.head.appendChild(style);
+  document.title = title;
+  setTimeout(() => { window.print(); document.head.removeChild(style); document.title = "DP Light — Demo"; }, 100);
+};
+
+// ---- Notification simulation (demo shows toast; live build sends real SMS/email) ----
+let _toasts = [];
+const notify = (msg, type = "info") => {
+  // In the demo we just set state; the App renders toasts
+  _toasts.push({ id: Date.now(), msg, type });
+  if (typeof window.__setToasts === "function") window.__setToasts([..._toasts]);
+  setTimeout(() => { _toasts = _toasts.filter(t => t.id !== _toasts[0]?.id); if (typeof window.__setToasts === "function") window.__setToasts([..._toasts]); }, 4000);
+};
+const notifyAssigned = (rider, customer, area) => {
+  notify(`📧 Email sent to ${customer} — rider ${rider} assigned for delivery to ${area}`, "email");
+  notify(`📱 SMS sent to director — ${rider} dispatched to ${area}`, "sms");
+};
+const notifyDelivered = (rider, customer, area) => {
+  notify(`📧 Email sent to ${customer} — delivery to ${area} completed by ${rider}`, "email");
+  notify(`📱 SMS sent to director — ${area} delivery complete`, "sms");
+};
+
+// ---- Export bar component ----
+function ExportBar({ title, cols, rows }) {
+  return (
+    <div className="no-print" style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginBottom: 10 }}>
+      <button onClick={() => exportCSV(title, cols, rows)} style={{ ...ghostBtn, fontSize: 12, padding: "6px 12px" }}><Download size={14} /> Excel (CSV)</button>
+      <button onClick={() => exportPDF(title)} style={{ ...ghostBtn, fontSize: 12, padding: "6px 12px" }}><Download size={14} /> PDF</button>
+    </div>
+  );
+}
+
 const STATUS = {
   unassigned: { label: "Unassigned", color: C.sub, bg: "#EEF0EE" },
   assigned: { label: "Assigned", color: C.amberDeep, bg: "#FCEBD6" },
@@ -204,15 +248,17 @@ const STATUS = {
 };
 
 const NAV = [
-  { key: "dashboard", label: "Dashboard", icon: LayoutDashboard },
-  { key: "customers", label: "Customers", icon: Users },
-  { key: "products", label: "Products", icon: Package },
-  { key: "purchases", label: "Purchases", icon: ShoppingBag },
-  { key: "warehouse", label: "Warehouse", icon: Warehouse },
-  { key: "sales", label: "Sales", icon: Receipt },
-  { key: "finance", label: "Finance", icon: Wallet },
-  { key: "riders", label: "Rider Delivery", icon: Bike },
-  { key: "users", label: "User Master", icon: UserCog },
+  { key: "dashboard", label: "Dashboard", icon: LayoutDashboard, roles: ["Owner / Manager", "Dispatch"] },
+  { key: "customers", label: "Customers", icon: Users, roles: ["Owner / Manager"] },
+  { key: "products", label: "Products", icon: Package, roles: ["Owner / Manager"] },
+  { key: "purchases", label: "Purchases", icon: ShoppingBag, roles: ["Owner / Manager"] },
+  { key: "warehouse", label: "Warehouse", icon: Warehouse, roles: ["Owner / Manager"] },
+  { key: "sales", label: "Sales", icon: Receipt, roles: ["Owner / Manager", "Dispatch"] },
+  { key: "finance", label: "Finance", icon: Wallet, roles: ["Owner / Manager"] },
+  { key: "riders", label: "Rider Delivery", icon: Bike, roles: ["Owner / Manager", "Dispatch"] },
+  { key: "ai", label: "AI Advisor", icon: Sparkles, roles: ["Owner / Manager", "Dispatch"] },
+  { key: "users", label: "User Master", icon: UserCog, roles: ["Owner / Manager"] },
+  { key: "mydeliveries", label: "My Deliveries", icon: Bike, roles: ["Rider"] },
 ];
 
 const whName = (id) => WAREHOUSES.find(w => w.id === id)?.name ?? id;
@@ -225,6 +271,16 @@ export default function DemoApp() {
   const [user, setUser] = useState(null);
   const [active, setActive] = useState("dashboard");
   const [drawer, setDrawer] = useState(false);
+
+  // role-filtered nav
+  const visibleNav = useMemo(() => user ? NAV.filter(n => n.roles.includes(user.role)) : [], [user]);
+
+  // reset to first visible tab on login
+  const doLogin = (u) => {
+    setUser(u);
+    const first = NAV.find(n => n.roles.includes(u.role));
+    setActive(first?.key || "dashboard");
+  };
 
   // lifted state
   const [customers, setCustomers] = useState(CUSTOMERS0);
@@ -315,6 +371,30 @@ export default function DemoApp() {
     return ref;
   };
 
+  // Delete a purchase invoice: reverse journal + stock
+  const deletePurchase = (piId) => {
+    setPurchaseInvoices(prev => {
+      const pi = prev.find(x => x.id === piId);
+      if (!pi) return prev;
+      setJournal(jp => {
+        const orig = jp.filter(e => e.ref === piId && e.type === "Purchase");
+        return [...jp, ...orig.map(e => ({ id: uid("J"), date: new Date().toISOString(), type: "Delete", ref: `DEL-${piId}`, narration: `Delete ${piId}`, lines: e.lines.map(l => ({ ...l, dr: l.cr || 0, cr: l.dr || 0 })) }))];
+      });
+      (pi.lines || []).forEach(l => adjustStock(l.productId, "W-01", -l.qty, "Delete Out", `DEL-${piId}`));
+      if (pi.poId) setPurchaseOrders(pop => pop.map(po => po.id === pi.poId ? { ...po, status: "Open", invoiceId: null } : po));
+      return prev.filter(x => x.id !== piId);
+    });
+  };
+
+  // Void a financial transaction (receipt/payment/journal)
+  const voidFinTxn = (ref) => {
+    setJournal(prev => {
+      const orig = prev.filter(e => e.ref === ref && e.type !== "Void" && e.type !== "Delete");
+      if (!orig.length) return prev;
+      return [...prev, ...orig.map(e => ({ id: uid("J"), date: new Date().toISOString(), type: "Void", ref: `VOID-${ref}`, narration: `Void ${ref}`, lines: e.lines.map(l => ({ ...l, dr: l.cr || 0, cr: l.dr || 0 })) }))];
+    });
+  };
+
   // Execute a transfer: move stock, write ledger, mark indent fulfilled
   const executeTransfer = (fromWh, toWh, lines, indentId) => {
     const tId = uid("TR");
@@ -338,16 +418,31 @@ export default function DemoApp() {
     if (indentId) setIndents(prev => prev.map(i => i.id === indentId ? { ...i, status: "Fulfilled", transferId: tId } : i));
   };
 
-  if (!user) return <Login onLogin={setUser} />;
+  // toast notifications
+  const [toasts, setToasts] = useState([]);
+  useEffect(() => { window.__setToasts = setToasts; return () => { window.__setToasts = null; }; }, []);
+
+  if (!user) return <Login onLogin={doLogin} />;
 
   return (
     <div style={{ fontFamily: "'Inter', system-ui, -apple-system, sans-serif", background: C.canvas, minHeight: "100vh", color: C.ink, display: "flex" }}>
-      {!isMobile && <Sidebar active={active} setActive={setActive} user={user} onLogout={() => setUser(null)} />}
+      {/* Toasts */}
+      {toasts.length > 0 && (
+        <div style={{ position: "fixed", bottom: 20, right: 20, zIndex: 80, display: "grid", gap: 8, maxWidth: 380 }}>
+          {toasts.map(t => (
+            <div key={t.id} style={{ background: t.type === "email" ? "#1d4ed8" : t.type === "sms" ? "#15803d" : C.petrol, color: "white", padding: "12px 16px", borderRadius: 10, fontSize: 13, fontWeight: 600, boxShadow: "0 8px 24px rgba(0,0,0,0.25)", display: "flex", alignItems: "center", gap: 8 }}>
+              {t.type === "email" ? <Mail size={16} /> : t.type === "sms" ? <MessageSquare size={16} /> : <Sparkles size={16} />}
+              {t.msg}
+            </div>
+          ))}
+        </div>
+      )}
+      {!isMobile && <Sidebar active={active} setActive={setActive} user={user} onLogout={() => setUser(null)} navItems={visibleNav} />}
       {isMobile && drawer && (
         <>
           <div onClick={() => setDrawer(false)} style={{ position: "fixed", inset: 0, background: "rgba(10,30,35,0.5)", zIndex: 40 }} />
           <div style={{ position: "fixed", top: 0, left: 0, bottom: 0, zIndex: 50, width: 260 }}>
-            <Sidebar active={active} setActive={setActive} user={user} onLogout={() => setUser(null)} onClose={() => setDrawer(false)} mobile />
+            <Sidebar active={active} setActive={setActive} user={user} onLogout={() => setUser(null)} onClose={() => setDrawer(false)} mobile navItems={visibleNav} />
           </div>
         </>
       )}
@@ -355,7 +450,7 @@ export default function DemoApp() {
       <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column" }}>
         <header style={{ background: C.card, borderBottom: `1px solid ${C.line}`, padding: isMobile ? "12px 16px" : "14px 28px", display: "flex", alignItems: "center", gap: 14, position: "sticky", top: 0, zIndex: 30 }}>
           {isMobile && <button onClick={() => setDrawer(true)} style={iconBtn}><Menu size={22} /></button>}
-          <div style={{ fontWeight: 700, fontSize: isMobile ? 16 : 18, letterSpacing: -0.3 }}>{NAV.find(n => n.key === active)?.label}</div>
+          <div style={{ fontWeight: 700, fontSize: isMobile ? 16 : 18, letterSpacing: -0.3 }}>{visibleNav.find(n => n.key === active)?.label || active}</div>
           <div style={{ flex: 1 }} />
           {!isMobile && (
             <div style={{ display: "flex", alignItems: "center", gap: 8, background: C.canvas, border: `1px solid ${C.line}`, borderRadius: 10, padding: "8px 12px", width: 240 }}>
@@ -370,12 +465,14 @@ export default function DemoApp() {
           {active === "dashboard" && <Dashboard isMobile={isMobile} orders={orders} products={products} totalStock={totalStock} setActive={setActive} sales={sales} acctBalance={acctBalance} customers={customers} customerBalance={customerBalance} />}
           {active === "customers" && <Customers isMobile={isMobile} customers={customers} upsertCustomer={upsertCustomer} customerBalance={customerBalance} journal={journal} />}
           {active === "products" && <Products isMobile={isMobile} products={products} upsertProduct={upsertProduct} setStock={setStock} setLedger={setLedger} totalStock={totalStock} stock={stock} />}
-          {active === "purchases" && <Purchases isMobile={isMobile} products={products} suppliers={suppliers} purchaseOrders={purchaseOrders} setPurchaseOrders={setPurchaseOrders} purchaseInvoices={purchaseInvoices} postPurchase={postPurchase} />}
+          {active === "purchases" && <Purchases isMobile={isMobile} products={products} suppliers={suppliers} purchaseOrders={purchaseOrders} setPurchaseOrders={setPurchaseOrders} purchaseInvoices={purchaseInvoices} postPurchase={postPurchase} deletePurchase={deletePurchase} />}
           {active === "warehouse" && <WarehouseModule isMobile={isMobile} products={products} stock={stock} ledger={ledger} indents={indents} setIndents={setIndents} transfers={transfers} executeTransfer={executeTransfer} totalStock={totalStock} />}
           {active === "sales" && <Sales isMobile={isMobile} products={products} customers={customers} sales={sales} postSale={postSale} voidSale={voidSale} totalStock={totalStock} quotations={quotations} setQuotations={setQuotations} />}
-          {active === "finance" && <Finance isMobile={isMobile} journal={journal} postJournal={postJournal} customers={customers} suppliers={suppliers} customerBalance={customerBalance} supplierBalance={supplierBalance} acctBalance={acctBalance} setGLState={null} />}
+          {active === "finance" && <Finance isMobile={isMobile} journal={journal} postJournal={postJournal} customers={customers} suppliers={suppliers} customerBalance={customerBalance} supplierBalance={supplierBalance} acctBalance={acctBalance} voidFinTxn={voidFinTxn} />}
           {active === "riders" && <Riders isMobile={isMobile} orders={orders} setOrders={setOrders} />}
+          {active === "ai" && <AIAdvisor isMobile={isMobile} sales={sales} products={products} totalStock={totalStock} customers={customers} customerBalance={customerBalance} />}
           {active === "users" && <UserMaster isMobile={isMobile} users={users} upsertUser={upsertUser} />}
+          {active === "mydeliveries" && <MyDeliveries isMobile={isMobile} orders={orders} setOrders={setOrders} riderId={user.riderId} riderName={user.name} />}
         </main>
       </div>
     </div>
@@ -402,7 +499,12 @@ function Login({ onLogin }) {
         </div>
         <input placeholder="demo@dplight.co.ke" defaultValue="demo@dplight.co.ke" style={inp} />
         <input placeholder="Password" type="password" defaultValue="demo1234" style={{ ...inp, marginTop: 10 }} />
-        <button onClick={() => onLogin({ role, initials: role === "Rider" ? "RD" : role === "Dispatch" ? "DP" : "OM" })}
+        <button onClick={() => onLogin({
+            role,
+            initials: role === "Rider" ? "RD" : role === "Dispatch" ? "DP" : "OM",
+            name: role === "Rider" ? "James Kariuki" : role === "Dispatch" ? "Dispatch Desk" : "Diana P.",
+            riderId: role === "Rider" ? "r1" : null,
+          })}
           style={{ marginTop: 18, width: "100%", padding: "13px", borderRadius: 10, border: "none", background: C.petrol, color: "white", fontSize: 15, fontWeight: 700, cursor: "pointer" }}>Enter demo</button>
         <div style={{ marginTop: 14, fontSize: 12, color: C.sub, textAlign: "center", lineHeight: 1.5 }}>Sandbox only — nothing here touches live shop data. Play freely.</div>
       </div>
@@ -411,7 +513,7 @@ function Login({ onLogin }) {
 }
 
 /* ---------------- Sidebar ---------------- */
-function Sidebar({ active, setActive, user, onLogout, onClose, mobile }) {
+function Sidebar({ active, setActive, user, onLogout, onClose, mobile, navItems }) {
   return (
     <aside style={{ width: 260, background: C.petrolDeep, color: "#DCE8EA", minHeight: "100vh", display: "flex", flexDirection: "column", flexShrink: 0 }}>
       <div style={{ padding: "20px 20px 16px", display: "flex", alignItems: "center", gap: 10 }}>
@@ -420,13 +522,14 @@ function Sidebar({ active, setActive, user, onLogout, onClose, mobile }) {
         {mobile && <button onClick={onClose} style={{ ...iconBtn, marginLeft: "auto", color: "#DCE8EA" }}><X size={20} /></button>}
       </div>
       <div style={{ padding: "0 12px", flex: 1 }}>
-        {NAV.map(n => {
+        {navItems.map(n => {
           const on = active === n.key; const Icon = n.icon;
           return (
             <button key={n.key} onClick={() => setActive(n.key)}
               style={{ width: "100%", display: "flex", alignItems: "center", gap: 12, padding: "11px 14px", marginBottom: 3, borderRadius: 10, cursor: "pointer", fontSize: 14.5, fontWeight: on ? 700 : 500, border: "none", textAlign: "left", background: on ? C.petrolSoft : "transparent", color: on ? "white" : "#B4C7CA" }}>
               <Icon size={19} /> {n.label}
               {n.key === "riders" && <span style={{ marginLeft: "auto", fontSize: 11, background: C.amber, color: C.petrolDeep, fontWeight: 800, padding: "1px 7px", borderRadius: 20 }}>live</span>}
+              {n.key === "mydeliveries" && <span style={{ marginLeft: "auto", fontSize: 11, background: C.green, color: "white", fontWeight: 800, padding: "1px 7px", borderRadius: 20 }}>you</span>}
             </button>
           );
         })}
@@ -435,8 +538,8 @@ function Sidebar({ active, setActive, user, onLogout, onClose, mobile }) {
         <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10 }}>
           <div style={{ width: 32, height: 32, borderRadius: "50%", background: C.petrolSoft, display: "grid", placeItems: "center", fontSize: 12, fontWeight: 700, color: "white" }}>{user.initials}</div>
           <div style={{ fontSize: 13 }}>
-            <div style={{ color: "white", fontWeight: 600 }}>{user.role}</div>
-            <div style={{ color: "#8FA9AD", fontSize: 11 }}>demo@dplight.co.ke</div>
+            <div style={{ color: "white", fontWeight: 600 }}>{user.name || user.role}</div>
+            <div style={{ color: "#8FA9AD", fontSize: 11 }}>{user.role}</div>
           </div>
         </div>
         <button onClick={onLogout} style={{ width: "100%", display: "flex", alignItems: "center", gap: 8, padding: "9px 12px", borderRadius: 9, border: "none", background: "transparent", color: "#B4C7CA", fontSize: 13, cursor: "pointer", fontWeight: 600 }}><LogOut size={16} /> Sign out</button>
@@ -523,6 +626,7 @@ function Customers({ isMobile, customers, upsertCustomer, customerBalance, journ
         )}
       </div>
       <Hint>Tap a customer to open their statement, then Edit to change their details.</Hint>
+      <ExportBar title="Customers" cols={["Code", "Name", "Type", "Phone", "Town", "Balance"]} rows={customers.map(c => [c.id, c.name, c.type, c.phone, c.town, bal(c)])} />
     </div>
   );
 }
@@ -631,6 +735,7 @@ function Products({ isMobile, products, upsertProduct, setStock, setLedger, tota
         )}
       </div>
       <Hint>Tap a product to view and edit it. The POS reads this list live, so new/edited products appear there immediately.</Hint>
+      <ExportBar title="Products" cols={["Code", "Name", "Group", "Unit", "Sale", "Cost", "Stock"]} rows={products.map(p => [p.code, p.name, p.group, p.unit, p.price, p.cost, totalStock(p.id)])} />
     </div>
   );
 }
@@ -1226,17 +1331,25 @@ function Quotations({ isMobile, products, customers, quotations, setQuotations, 
   );
 }
 
-/* ---------------- Riders ---------------- */
+/* ---------------- Riders (with notifications + expanded reports) ---------------- */
 function Riders({ isMobile, orders, setOrders }) {
   const [tab, setTab] = useState("board");
   const [assigning, setAssigning] = useState(null);
   const [showNew, setShowNew] = useState(false);
   const rn = (id) => RIDERS.find(r => r.id === id)?.name ?? "—";
-  const assign = (oid, rid) => { setOrders(o => o.map(x => x.id === oid ? { ...x, status: "assigned", riderId: rid, assignedAt: new Date().toISOString() } : x)); setAssigning(null); };
-  const advance = (oid) => setOrders(o => o.map(x => {
+  const assign = (oid, rid) => {
+    const o = orders.find(x => x.id === oid);
+    setOrders(prev => prev.map(x => x.id === oid ? { ...x, status: "assigned", riderId: rid, assignedAt: new Date().toISOString() } : x));
+    setAssigning(null);
+    if (o) notifyAssigned(rn(rid), o.customer, o.area);
+  };
+  const advance = (oid) => setOrders(prev => prev.map(x => {
     if (x.id !== oid) return x;
     if (x.status === "assigned") return { ...x, status: "picked", pickedAt: new Date().toISOString() };
-    if (x.status === "picked") return { ...x, status: "delivered", deliveredAt: new Date().toISOString() };
+    if (x.status === "picked") {
+      notifyDelivered(rn(x.riderId), x.customer, x.area);
+      return { ...x, status: "delivered", deliveredAt: new Date().toISOString() };
+    }
     return x;
   }));
   const addOrder = (data) => { setOrders(o => [{ id: uid("DEL"), ...data, status: "unassigned", riderId: null, assignedAt: null, pickedAt: null, deliveredAt: null }, ...o]); setShowNew(false); };
@@ -1288,23 +1401,97 @@ function Riders({ isMobile, orders, setOrders }) {
         </div>
       )}
 
-      {tab === "reports" && (
+      {tab === "reports" && <RiderReports isMobile={isMobile} orders={orders} delivered={delivered} rn={rn} />}
+    </div>
+  );
+}
+
+function RiderReports({ isMobile, orders, delivered, rn }) {
+  const [rep, setRep] = useState("summary");
+  const reps = [
+    { k: "summary", label: "Summary", icon: BarChart2 },
+    { k: "log", label: "Delivery Log", icon: ScrollText },
+    { k: "rider", label: "Rider Performance", icon: Bike },
+    { k: "area", label: "By Area", icon: MapPin },
+    { k: "time", label: "Delivery Times", icon: Timer },
+  ];
+
+  // rider performance
+  const byRider = {};
+  delivered.forEach(o => {
+    const r = rn(o.riderId);
+    byRider[r] = byRider[r] || { count: 0, totalMins: 0 };
+    byRider[r].count++;
+    const m = mins(o.pickedAt, o.deliveredAt);
+    if (m != null) byRider[r].totalMins += m;
+  });
+
+  // by area
+  const byArea = {};
+  orders.forEach(o => { byArea[o.area] = byArea[o.area] || { total: 0, delivered: 0 }; byArea[o.area].total++; if (o.status === "delivered") byArea[o.area].delivered++; });
+
+  return (
+    <div>
+      <div style={{ display: "flex", gap: 8, marginBottom: 14, flexWrap: "wrap" }}>
+        {reps.map(r => (
+          <button key={r.k} onClick={() => setRep(r.k)} style={{ display: "flex", alignItems: "center", gap: 6, padding: "8px 13px", borderRadius: 9, border: `1px solid ${rep === r.k ? C.petrol : C.line}`, background: rep === r.k ? "#EAF2F3" : C.card, color: rep === r.k ? C.petrol : C.sub, fontWeight: 600, fontSize: 13, cursor: "pointer" }}>
+            <r.icon size={15} /> {r.label}
+          </button>
+        ))}
+      </div>
+
+      {rep === "summary" && (
         <div>
-          <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr 1fr" : "repeat(3,1fr)", gap: 12, marginBottom: 18 }}>
-            {[["Delivered today", delivered.length], ["In progress", orders.filter(o => o.status === "assigned" || o.status === "picked").length], ["Unassigned", orders.filter(o => o.status === "unassigned").length]].map(([l, v]) => (
+          <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr 1fr" : "repeat(4,1fr)", gap: 12, marginBottom: 18 }}>
+            {[["Total deliveries", orders.length], ["Delivered", delivered.length], ["In progress", orders.filter(o => o.status === "assigned" || o.status === "picked").length], ["Unassigned", orders.filter(o => o.status === "unassigned").length]].map(([l, v]) => (
               <div key={l} style={{ ...card, padding: 16 }}><div style={{ fontSize: 26, fontWeight: 800 }}>{v}</div><div style={{ fontSize: 12, color: C.sub }}>{l}</div></div>
             ))}
           </div>
-          <div style={{ ...card, padding: 0, overflow: "hidden" }}>
-            <SectionHead title="Delivery log" />
-            {delivered.length === 0 && <Empty text="No completed deliveries yet — run one on the board." />}
-            {delivered.map(o => (
-              <Row key={o.id}>
-                <div style={{ flex: 1 }}><div style={{ fontWeight: 700, fontSize: 14 }}>{o.id} · <span style={{ fontWeight: 500 }}>{o.customer}</span></div><div style={{ fontSize: 12, color: C.sub }}>{rn(o.riderId)} · {o.area} · {o.items}</div></div>
-                <div style={{ textAlign: "right" }}><div style={{ fontSize: 13, fontWeight: 700 }}>{fmt(o.deliveredAt)}</div><div style={{ fontSize: 11, color: C.sub }}>{mins(o.pickedAt, o.deliveredAt) != null ? `${mins(o.pickedAt, o.deliveredAt)} min trip` : "—"}</div></div>
-              </Row>
-            ))}
-          </div>
+          <ExportBar title="Delivery_Summary" cols={["ID", "Customer", "Area", "Rider", "Status", "Assigned", "Delivered"]} rows={orders.map(o => [o.id, o.customer, o.area, rn(o.riderId), o.status, fmt(o.assignedAt), fmt(o.deliveredAt)])} />
+        </div>
+      )}
+
+      {rep === "log" && (
+        <div style={{ ...card, padding: 0, overflow: "hidden" }}>
+          <SectionHead title="Delivery log" />
+          {delivered.length === 0 && <Empty text="No completed deliveries yet." />}
+          {delivered.map(o => (
+            <Row key={o.id}>
+              <div style={{ flex: 1 }}><div style={{ fontWeight: 700, fontSize: 14 }}>{o.id} · <span style={{ fontWeight: 500 }}>{o.customer}</span></div><div style={{ fontSize: 12, color: C.sub }}>{rn(o.riderId)} · {o.area} · {o.items}</div></div>
+              <div style={{ textAlign: "right" }}><div style={{ fontSize: 13, fontWeight: 700 }}>{fmt(o.deliveredAt)}</div><div style={{ fontSize: 11, color: C.sub }}>{mins(o.pickedAt, o.deliveredAt) != null ? `${mins(o.pickedAt, o.deliveredAt)} min trip` : "—"}</div></div>
+            </Row>
+          ))}
+          <ExportBar title="Delivery_Log" cols={["ID", "Customer", "Area", "Rider", "Items", "Delivered At", "Trip Mins"]} rows={delivered.map(o => [o.id, o.customer, o.area, rn(o.riderId), o.items, fmt(o.deliveredAt), mins(o.pickedAt, o.deliveredAt)])} />
+        </div>
+      )}
+
+      {rep === "rider" && (
+        <div style={{ ...card, padding: 0, overflow: "hidden" }}>
+          <SectionHead title="Rider performance" />
+          {Object.keys(byRider).length === 0 ? <Empty text="No completed deliveries to measure." /> :
+            <Table cols={["Rider", "Deliveries", "Total time", "Avg. time"]} widths={["1.4fr", "0.8fr", "0.9fr", "0.9fr"]}
+              rows={Object.entries(byRider).map(([r, d]) => [<b>{r}</b>, d.count, `${d.totalMins} min`, `${d.count ? Math.round(d.totalMins / d.count) : 0} min`])} />}
+        </div>
+      )}
+
+      {rep === "area" && (
+        <div style={{ ...card, padding: 0, overflow: "hidden" }}>
+          <SectionHead title="Deliveries by area" />
+          <Table cols={["Area", "Total", "Delivered", "Completion"]} widths={["1.4fr", "0.7fr", "0.7fr", "1fr"]}
+            rows={Object.entries(byArea).map(([a, d]) => [<b>{a}</b>, d.total, d.delivered, <div style={{ display: "flex", alignItems: "center", gap: 8 }}><div style={{ flex: 1, height: 6, background: C.canvas, borderRadius: 4, overflow: "hidden" }}><div style={{ width: `${d.total ? (d.delivered / d.total * 100) : 0}%`, height: "100%", background: C.green }} /></div><span style={{ fontSize: 12, fontWeight: 600 }}>{d.total ? Math.round(d.delivered / d.total * 100) : 0}%</span></div>])} />
+        </div>
+      )}
+
+      {rep === "time" && (
+        <div style={{ ...card, padding: 0, overflow: "hidden" }}>
+          <SectionHead title="Delivery time analysis" />
+          {delivered.length === 0 ? <Empty text="No completed deliveries." /> :
+            <Table cols={["Delivery", "Customer", "Area", "Rider", "Assign→Left", "Left→Delivered", "Total"]} widths={["0.9fr", "1.2fr", "0.9fr", "1fr", "0.8fr", "0.9fr", "0.7fr"]}
+              rows={delivered.map(o => {
+                const a2p = mins(o.assignedAt, o.pickedAt), p2d = mins(o.pickedAt, o.deliveredAt), tot = mins(o.assignedAt, o.deliveredAt);
+                return [o.id, o.customer, o.area, rn(o.riderId), a2p != null ? `${a2p} min` : "—", p2d != null ? `${p2d} min` : "—", tot != null ? `${tot} min` : "—"];
+              })} />}
+          <ExportBar title="Delivery_Times" cols={["ID", "Customer", "Area", "Rider", "Assign→Left", "Left→Delivered", "Total"]} rows={delivered.map(o => [o.id, o.customer, o.area, rn(o.riderId), mins(o.assignedAt, o.pickedAt), mins(o.pickedAt, o.deliveredAt), mins(o.assignedAt, o.deliveredAt)])} />
         </div>
       )}
     </div>
@@ -1331,7 +1518,7 @@ function NewDelivery({ isMobile, onSave, onCancel }) {
 }
 
 /* ---------------- Purchases: PO + Invoice/GRN + Reports ---------------- */
-function Purchases({ isMobile, products, suppliers, purchaseOrders, setPurchaseOrders, purchaseInvoices, postPurchase }) {
+function Purchases({ isMobile, products, suppliers, purchaseOrders, setPurchaseOrders, purchaseInvoices, postPurchase, deletePurchase }) {
   const [tab, setTab] = useState("po");
   const tabs = [
     { k: "po", label: "Purchase Order", icon: ClipboardCheck },
@@ -1348,7 +1535,7 @@ function Purchases({ isMobile, products, suppliers, purchaseOrders, setPurchaseO
         ))}
       </div>
       {tab === "po" && <PurchaseOrderTab isMobile={isMobile} products={products} suppliers={suppliers} purchaseOrders={purchaseOrders} setPurchaseOrders={setPurchaseOrders} />}
-      {tab === "invoice" && <PurchaseInvoiceTab isMobile={isMobile} products={products} suppliers={suppliers} purchaseOrders={purchaseOrders} purchaseInvoices={purchaseInvoices} postPurchase={postPurchase} />}
+      {tab === "invoice" && <PurchaseInvoiceTab isMobile={isMobile} products={products} suppliers={suppliers} purchaseOrders={purchaseOrders} purchaseInvoices={purchaseInvoices} postPurchase={postPurchase} deletePurchase={deletePurchase} />}
       {tab === "reports" && <PurchaseReports isMobile={isMobile} purchaseOrders={purchaseOrders} purchaseInvoices={purchaseInvoices} />}
     </div>
   );
@@ -1410,7 +1597,7 @@ function PurchaseOrderTab({ isMobile, products, suppliers, purchaseOrders, setPu
   );
 }
 
-function PurchaseInvoiceTab({ isMobile, products, suppliers, purchaseOrders, purchaseInvoices, postPurchase }) {
+function PurchaseInvoiceTab({ isMobile, products, suppliers, purchaseOrders, purchaseInvoices, postPurchase, deletePurchase }) {
   const [mode, setMode] = useState("po"); // po = from PO, direct = standalone
   const [selPO, setSelPO] = useState("");
   const [supplierId, setSupplierId] = useState(suppliers[0]?.id || "");
@@ -1491,7 +1678,10 @@ function PurchaseInvoiceTab({ isMobile, products, suppliers, purchaseOrders, pur
           <div key={pi.id} style={{ padding: "14px 18px", borderBottom: `1px solid ${C.line}` }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
               <div><div style={{ fontWeight: 700, fontSize: 14 }}>{pi.id} · <span style={{ fontWeight: 500, color: C.sub }}>{fmtDate(pi.date)}</span></div><div style={{ fontSize: 13 }}>{pi.supplierName}{pi.poId ? ` · from ${pi.poId}` : ""}</div></div>
-              <div style={{ fontWeight: 700 }}>{money(pi.total)}</div>
+              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <div style={{ fontWeight: 700 }}>{money(pi.total)}</div>
+                <button onClick={() => deletePurchase(pi.id)} title="Delete" style={{ ...iconBtn, border: `1px solid ${C.line}`, borderRadius: 7, width: 32, height: 32, color: C.red }}><Trash2 size={15} /></button>
+              </div>
             </div>
             <div style={{ fontSize: 12, color: C.sub, marginTop: 6 }}>{pi.lines.map(l => `${l.qty}× ${l.name}`).join(", ")}</div>
           </div>
@@ -1527,6 +1717,109 @@ function PurchaseReports({ isMobile, purchaseOrders, purchaseInvoices }) {
               rows={purchaseInvoices.map(pi => [<b>{pi.id}</b>, fmtDate(pi.date), pi.supplierName, pi.poId || "—", <span style={{ fontWeight: 700 }}>{money(pi.total)}</span>, money(pi.vat)])} />}
         </div>
       )}
+    </div>
+  );
+}
+
+/* ---------------- Transaction Log (void receipts/payments/journals) --------- */
+function TransactionLog({ isMobile, journal, voidFinTxn }) {
+  const [confirm, setConfirm] = useState(null);
+  const txns = journal.filter(e => ["Receipt", "Payment", "Journal", "Void", "Delete"].includes(e.type)).sort((a, b) => new Date(b.date) - new Date(a.date));
+  const isVoided = (ref) => journal.some(e => e.ref === `VOID-${ref}`);
+  const doVoid = (ref) => { voidFinTxn(ref); setConfirm(null); };
+  return (
+    <div style={{ ...card, padding: 0, overflow: "hidden" }}>
+      <SectionHead title={`${txns.length} financial transactions`} />
+      {txns.length === 0 && <Empty text="No receipts, payments, or journals posted yet." />}
+      {txns.map(e => {
+        const voided = isVoided(e.ref) || e.type === "Void" || e.type === "Delete";
+        const tint = e.type === "Receipt" ? C.green : e.type === "Payment" ? C.red : e.type === "Void" || e.type === "Delete" ? C.sub : C.blue;
+        return (
+          <div key={e.id} style={{ display: "flex", alignItems: "center", gap: 12, padding: "12px 18px", borderBottom: `1px solid ${C.line}`, opacity: voided ? 0.5 : 1 }}>
+            <div style={{ width: 8, height: 8, borderRadius: "50%", background: tint, flexShrink: 0 }} />
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={{ fontWeight: 700, fontSize: 13.5, textDecoration: voided ? "line-through" : "none" }}>{e.ref} · {e.type}{voided && e.type !== "Void" && e.type !== "Delete" ? " (voided)" : ""}</div>
+              <div style={{ fontSize: 12, color: C.sub }}>{fmtDate(e.date)} · {e.narration}</div>
+            </div>
+            <div style={{ fontSize: 13, fontWeight: 700 }}>{money(e.lines.reduce((a, l) => a + (l.dr || 0), 0))}</div>
+            {!voided && e.type !== "Opening" && (
+              <button onClick={() => setConfirm(e.ref)} title="Void" style={{ ...iconBtn, border: `1px solid ${C.line}`, borderRadius: 7, width: 32, height: 32, color: C.red }}><Ban size={15} /></button>
+            )}
+          </div>
+        );
+      })}
+      {confirm && (
+        <div style={{ position: "fixed", inset: 0, zIndex: 70, background: "rgba(10,30,35,0.6)", display: "grid", placeItems: "center", padding: 16 }}>
+          <div style={{ background: "white", borderRadius: 14, padding: 24, maxWidth: 360 }}>
+            <div style={{ fontWeight: 700, fontSize: 16, marginBottom: 8 }}>Void {confirm}?</div>
+            <div style={{ fontSize: 13.5, color: C.sub, marginBottom: 18 }}>This reverses the transaction's accounting entries. The voided entry stays on record for audit.</div>
+            <div style={{ display: "flex", gap: 10 }}>
+              <button onClick={() => doVoid(confirm)} style={{ ...primaryBtn, background: C.red }}><Ban size={16} /> Void</button>
+              <button onClick={() => setConfirm(null)} style={{ padding: "11px 18px", borderRadius: 10, border: `1px solid ${C.line}`, background: C.card, color: C.sub, fontWeight: 600, cursor: "pointer" }}>Cancel</button>
+            </div>
+          </div>
+        </div>
+      )}
+      <ExportBar title="Financial_Transactions" cols={["Ref", "Date", "Type", "Narration", "Amount"]} rows={txns.map(e => [e.ref, fmtDate(e.date), e.type, e.narration, e.lines.reduce((a, l) => a + (l.dr || 0), 0)])} />
+    </div>
+  );
+}
+
+/* ---------------- AI Advisor ---------------- */
+function AIAdvisor({ isMobile, sales, products, totalStock, customers, customerBalance }) {
+  const lowStock = products.filter(p => totalStock(p.id) <= p.reorder);
+  const topDebtors = customers.filter(c => customerBalance(c.id) > 0).sort((a, b) => customerBalance(b.id) - customerBalance(a.id));
+  const totalSales = sales.filter(s => !s.voided).reduce((a, s) => a + s.total, 0);
+  const topProducts = {};
+  sales.filter(s => !s.voided && s.lines).forEach(s => s.lines.forEach(l => { topProducts[l.name] = (topProducts[l.name] || 0) + l.qty; }));
+  const sorted = Object.entries(topProducts).sort((a, b) => b[1] - a[1]).slice(0, 5);
+
+  const insights = [
+    lowStock.length > 0 && { icon: AlertTriangle, tint: C.red, title: `${lowStock.length} product(s) at or below reorder level`, detail: lowStock.map(p => `${p.name}: ${totalStock(p.id)} remaining (reorder at ${p.reorder})`).join(". "), action: "Consider raising a purchase order for these items to avoid stockouts." },
+    topDebtors.length > 0 && { icon: Users, tint: C.amber, title: `${topDebtors.length} customer(s) with outstanding balances`, detail: topDebtors.slice(0, 3).map(c => `${c.name}: ${money(customerBalance(c.id))}`).join(". "), action: "Follow up on overdue accounts, especially those approaching their credit limit." },
+    sorted.length > 0 && { icon: TrendingUp, tint: C.green, title: "Top-selling products (this session)", detail: sorted.map(([n, q]) => `${n}: ${q} units`).join(", "), action: "These are your fast movers — ensure stock levels match demand velocity." },
+    totalSales > 0 && { icon: Receipt, tint: C.blue, title: `Session revenue: ${money(totalSales)}`, detail: `Across ${sales.filter(s => !s.voided).length} invoices.`, action: "Review your Sales by MOP report to understand payment channel mix." },
+  ].filter(Boolean);
+
+  return (
+    <div>
+      <div style={{ ...card, padding: 20, marginBottom: 16, border: `1.5px solid #c084fc`, background: "linear-gradient(135deg, #faf5ff, #f3e8ff)" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 12 }}>
+          <div style={{ width: 40, height: 40, borderRadius: 10, background: "#7c3aed", display: "grid", placeItems: "center" }}><Sparkles size={22} color="white" /></div>
+          <div>
+            <div style={{ fontWeight: 800, fontSize: 17, color: "#4c1d95" }}>AI Business Advisor</div>
+            <div style={{ fontSize: 12.5, color: "#6b21a8" }}>Insights based on your current data</div>
+          </div>
+        </div>
+        <div style={{ background: "#ede9fe", borderRadius: 10, padding: "12px 14px", fontSize: 13, color: "#5b21b6", display: "flex", gap: 10, alignItems: "flex-start" }}>
+          <AlertTriangle size={16} style={{ flexShrink: 0, marginTop: 2 }} />
+          <div>
+            <b>Disclaimer:</b> These insights are generated from the data currently in this demo session. In the live system, the AI advisor will integrate with your full Fusion database, historical trends, seasonality patterns, and supplier lead times to provide actionable, data-driven recommendations. More data = better advice.
+          </div>
+        </div>
+      </div>
+
+      <div style={{ display: "grid", gap: 14 }}>
+        {insights.length === 0 && (
+          <div style={{ ...card, padding: 24, textAlign: "center" }}>
+            <Sparkles size={28} color="#7c3aed" style={{ marginBottom: 10 }} />
+            <div style={{ fontWeight: 700, marginBottom: 6 }}>No insights yet</div>
+            <div style={{ fontSize: 13, color: C.sub }}>Make some sales, create products, and post purchases — the advisor generates insights as your data grows.</div>
+          </div>
+        )}
+        {insights.map((ins, i) => (
+          <div key={i} style={{ ...card, padding: 18 }}>
+            <div style={{ display: "flex", alignItems: "flex-start", gap: 12 }}>
+              <div style={{ width: 36, height: 36, borderRadius: 9, background: ins.tint + "22", display: "grid", placeItems: "center", flexShrink: 0 }}><ins.icon size={18} color={ins.tint} /></div>
+              <div style={{ flex: 1 }}>
+                <div style={{ fontWeight: 700, fontSize: 14.5, marginBottom: 4 }}>{ins.title}</div>
+                <div style={{ fontSize: 13, color: C.sub, marginBottom: 8 }}>{ins.detail}</div>
+                <div style={{ fontSize: 13, color: "#7c3aed", fontWeight: 600, display: "flex", alignItems: "center", gap: 6 }}><Sparkles size={14} /> {ins.action}</div>
+              </div>
+            </div>
+          </div>
+        ))}
+      </div>
     </div>
   );
 }
@@ -1575,13 +1868,14 @@ function UserMaster({ isMobile, users, upsertUser }) {
 }
 
 /* ---------------- Finance module ---------------- */
-function Finance({ isMobile, journal, postJournal, customers, suppliers, customerBalance, supplierBalance, acctBalance }) {
+function Finance({ isMobile, journal, postJournal, customers, suppliers, customerBalance, supplierBalance, acctBalance, voidFinTxn }) {
   const [tab, setTab] = useState("reports");
   const tabs = [
     { k: "coa", label: "Chart of Accounts", icon: BookOpen },
     { k: "receipt", label: "Receipt", icon: HandCoins },
     { k: "payment", label: "Payment", icon: Wallet },
     { k: "journal", label: "Journal", icon: FileText },
+    { k: "txnlog", label: "Transactions", icon: ScrollText },
     { k: "reports", label: "Reports", icon: FileBarChart },
   ];
   return (
@@ -1597,6 +1891,7 @@ function Finance({ isMobile, journal, postJournal, customers, suppliers, custome
       {tab === "receipt" && <ReceiptForm isMobile={isMobile} customers={customers} customerBalance={customerBalance} postJournal={postJournal} />}
       {tab === "payment" && <PaymentForm isMobile={isMobile} suppliers={suppliers} supplierBalance={supplierBalance} postJournal={postJournal} />}
       {tab === "journal" && <JournalEntry isMobile={isMobile} postJournal={postJournal} journal={journal} />}
+      {tab === "txnlog" && <TransactionLog isMobile={isMobile} journal={journal} voidFinTxn={voidFinTxn} />}
       {tab === "reports" && <FinanceReports isMobile={isMobile} journal={journal} customers={customers} suppliers={suppliers} customerBalance={customerBalance} supplierBalance={supplierBalance} acctBalance={acctBalance} />}
     </div>
   );
@@ -1770,6 +2065,7 @@ function FinanceReports({ isMobile, journal, customers, suppliers, customerBalan
               <span /><span style={{ textAlign: "right" }}>Totals</span><span style={{ textAlign: "right" }}>{money(dr)}</span><span style={{ textAlign: "right" }}>{money(cr)}</span>
             </div>
             <div style={{ padding: "10px 18px", fontSize: 12.5, color: dr === cr ? C.green : C.red, fontWeight: 600 }}>{dr === cr ? "✓ In balance" : "Out of balance"}</div>
+            <ExportBar title="Trial_Balance" cols={["Code", "Account", "Debit", "Credit"]} rows={rows} />
           </div>
         );
       })()}
@@ -1890,6 +2186,101 @@ function PostingPreview({ lines }) {
           <span style={{ fontWeight: 600 }}>{money(l.dr || l.cr)}</span>
         </div>
       ))}
+    </div>
+  );
+}
+
+/* ---------------- Rider's own view: My Deliveries ---------------- */
+function MyDeliveries({ isMobile, orders, setOrders, riderId, riderName }) {
+  const mine = orders.filter(o => o.riderId === riderId);
+  const active = mine.filter(o => o.status === "assigned" || o.status === "picked");
+  const done = mine.filter(o => o.status === "delivered");
+
+  const advance = (oid) => setOrders(prev => prev.map(x => {
+    if (x.id !== oid) return x;
+    if (x.status === "assigned") return { ...x, status: "picked", pickedAt: new Date().toISOString() };
+    if (x.status === "picked") {
+      notifyDelivered(riderName, x.customer, x.area);
+      return { ...x, status: "delivered", deliveredAt: new Date().toISOString() };
+    }
+    return x;
+  }));
+
+  return (
+    <div>
+      <div style={{ ...card, padding: 18, marginBottom: 14, background: `linear-gradient(135deg, ${C.petrolDeep}, ${C.petrolSoft})`, color: "white", borderColor: C.petrolSoft }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          <Bike size={24} />
+          <div>
+            <div style={{ fontWeight: 800, fontSize: 18 }}>Hi, {riderName}</div>
+            <div style={{ fontSize: 13, opacity: 0.8 }}>{active.length} active · {done.length} delivered today</div>
+          </div>
+        </div>
+      </div>
+
+      {active.length === 0 && mine.length === 0 && (
+        <div style={{ ...card, padding: 32, textAlign: "center" }}>
+          <Bike size={36} color={C.sub} style={{ marginBottom: 10 }} />
+          <div style={{ fontWeight: 700, fontSize: 16, marginBottom: 6 }}>No deliveries assigned</div>
+          <div style={{ fontSize: 13.5, color: C.sub }}>Dispatch will assign deliveries to you. They'll appear here automatically.</div>
+        </div>
+      )}
+
+      {active.length > 0 && (
+        <div style={{ marginBottom: 20 }}>
+          <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 10, textTransform: "uppercase", letterSpacing: 0.4, color: C.sub }}>Active deliveries</div>
+          <div style={{ display: "grid", gap: 12 }}>
+            {active.map(o => {
+              const s = STATUS[o.status];
+              return (
+                <div key={o.id} style={{ ...card, padding: 18 }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
+                    <span style={{ fontWeight: 800, fontSize: 16 }}>{o.id}</span>
+                    <Pill s={s} />
+                  </div>
+                  <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 4 }}>{o.customer}</div>
+                  <div style={{ fontSize: 14, color: C.sub, display: "flex", alignItems: "center", gap: 5, marginBottom: 4 }}>
+                    <MapPin size={15} /> {o.area}
+                  </div>
+                  <div style={{ fontSize: 13, color: C.sub, marginBottom: 14 }}>{o.items}</div>
+                  {o.status === "assigned" && (
+                    <BigBtn color={C.blue} onClick={() => advance(o.id)} full icon={<ArrowRight size={20} />}>I have the package — leaving now</BigBtn>
+                  )}
+                  {o.status === "picked" && (
+                    <BigBtn color={C.green} onClick={() => advance(o.id)} full icon={<CheckCircle2 size={20} />}>Delivered to customer</BigBtn>
+                  )}
+                  {o.assignedAt && (
+                    <div style={{ display: "flex", gap: 14, marginTop: 14, paddingTop: 12, borderTop: `1px solid ${C.line}`, fontSize: 12, color: C.sub, flexWrap: "wrap" }}>
+                      <Stamp label="Assigned" t={o.assignedAt} />
+                      <Stamp label="Left" t={o.pickedAt} />
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {done.length > 0 && (
+        <div>
+          <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 10, textTransform: "uppercase", letterSpacing: 0.4, color: C.sub }}>Completed today</div>
+          {done.map(o => (
+            <div key={o.id} style={{ ...card, padding: 14, marginBottom: 8, opacity: 0.75 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                <div>
+                  <div style={{ fontWeight: 700, fontSize: 14 }}>{o.customer}</div>
+                  <div style={{ fontSize: 12, color: C.sub }}>{o.area} · {o.items}</div>
+                </div>
+                <div style={{ textAlign: "right" }}>
+                  <div style={{ color: C.greenDeep, fontWeight: 700, fontSize: 13, display: "flex", alignItems: "center", gap: 4 }}><CheckCircle2 size={14} /> {fmt(o.deliveredAt)}</div>
+                  <div style={{ fontSize: 11, color: C.sub }}>{mins(o.pickedAt, o.deliveredAt) != null ? `${mins(o.pickedAt, o.deliveredAt)} min` : ""}</div>
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
